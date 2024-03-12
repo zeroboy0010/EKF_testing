@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'ekf_v1 = robot_localization.EKF_v1:main',
+            'ekf_v2 = robot_localization.EKF_v2:main',
         ],
     },
 )

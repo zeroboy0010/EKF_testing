@@ -9,16 +9,15 @@ from time import time,sleep
 
 # Covariance for EKF simulation
 Q = np.diag([
-    10.0,  # variance of location on x-axis
-    10.0,  # variance of location on y-axis
+    1.0,  # variance of location on x-axis
+    1.0,  # variance of location on y-axis
     np.deg2rad(3.0),  # variance of yaw angle
     0.5,  # variance of velocity
     np.deg2rad(0.5)
 ]) ** 2  # predict state covariance
  ##             yaw             v           dot_yaw
 
-R1 = np.diag([np.deg2rad(0.01)]) ** 2  # Observation yaw covariance
-R2 = np.diag([ 0.01, np.deg2rad(0.1)]) ** 2  # Observation Vx,omega position covariance
+R = np.diag([np.deg2rad(1.0),0.2, np.deg2rad(1.0)]) ** 2  # Observation yaw covariance
 
 # #  Simulation parameter
 # INPUT_NOISE = np.diag([0.3, np.deg2rad(1.0)]) ** 2
@@ -61,13 +60,13 @@ class odometry_class(Node):
     def imu_callback(self, imu_msg):
         # imu_msg = Imu()
         self.feedback_yaw =  euler_from_quaternion(imu_msg.orientation.x, imu_msg.orientation.y, imu_msg.orientation.z, imu_msg.orientation.w)
-        self.z_imu = np.array([[self.feedback_yaw]])
+        self.z = np.array([[self.feedback_yaw],[self.vx], [self.omega]])
         # print(self.feedback_yaw)
     def odom_callback(self, odom_msg):
         # odom_msg = Odometry()
         self.vx = odom_msg.twist.twist.angular.x
         self.omega = odom_msg.twist.twist.angular.z
-        self.z_odom = np.array([[self.vx], [self.omega]])
+        self.z = np.array([[self.feedback_yaw],[self.vx], [self.omega]])
         # print(self.z_odom)
     
     def control_callback(self, control_msg):
@@ -89,13 +88,11 @@ class odometry_class(Node):
         self.hxEst = self.xEst
         self.hxTrue = self.xTrue
         self.hxDR = self.xTrue
-        self.hz1 = np.zeros((1, 1))
-        self.hz2 = np.zeros((2, 1))
+        self.hz = np.zeros((3, 1))
         ##
         self.u = np.array([[0.0], [0.0]])
-        self.z_odom = np.array([[0.0], [0.0]])
-        self.z_imu = np.array([[0.0]])
-
+        self.z = np.array([[0.0], [0.0] , [0.0]])
+        self.vx,self.omega,self.feedback_yaw = 0.0,0.0,0.0
         ## time compare
         self.new_time = time()
         self.old_time = time()
@@ -108,7 +105,7 @@ class odometry_class(Node):
 
         # self.xTrue, z1, z2, self.xDR, ud = self.observation(self.xTrue, self.xDR, u)  # feedback here <>
 
-        self.xEst, self.PEst = self.ekf_estimation(self.xEst, self.PEst, self.z_imu, self.z_odom, self.u, DT)  # input control here <ud>
+        self.xEst, self.PEst = self.ekf_estimation(self.xEst, self.PEst, self.z , self.u, DT)  # input control here <ud>
         
         print("------------xEst-------")
         print(self.xEst)
@@ -165,24 +162,16 @@ class odometry_class(Node):
         return x
 
 
-    def imu_observation_model(self, x):
-        H1 = np.array([
-            [0, 0, 1.0, 0, 0]
+    def observation_model(self,x):
+        H = np.array([
+            [0, 0, 1, 0, 0],
+            [0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 1]
         ])
 
-        z1 = H1 @ x
+        z = H @ x
 
-        return z1
-
-    def odom_observation_model(self, x):
-        H2 = np.array([
-            [0, 0, 0, 1.0, 0],
-            [0, 0, 0, 0, 1.0]
-        ])
-
-        z2 = H2 @ x
-
-        return z2
+        return z
 
 
     def jacob_f(self, x, u, DT):
@@ -212,45 +201,32 @@ class odometry_class(Node):
         return jF
 
 
-    def jacob_h1(self):
+    def jacob_h(self):
         # Jacobian of Observation Model
-        jH1 = np.array([
-            [0, 0, 1.0, 0, 0]
+        jH = np.array([
+            [0, 0, 1, 0, 0],
+            [0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 1]
         ])
 
-        return jH1
+        return jH
 
-    def jacob_h2(self):
-        # Jacobian of Observation Model
-        jH2 = np.array([
-            [0, 0, 0, 1.0, 0],
-            [0, 0, 0, 0, 1.0]
-        ])
-
-        return jH2
-
-    def ekf_estimation(self, xEst, PEst, z1, z2, u,DT):
+    def ekf_estimation(self, xEst, PEst, z, u,DT):
         #  Predict
         xPred = self.motion_model(xEst, u, DT)
         jF = self.jacob_f(xEst, u, DT)
         PPred = jF @ PEst @ jF.T + Q
 
         #  Update
-        jH1 = self.jacob_h1()
-        jH2 = self.jacob_h2()
-        ## imu
-        zPred_imu = self.imu_observation_model(xPred)
-        y1 = z1 - zPred_imu
-        S1 = jH1 @ PPred @ jH1.T + R1
-        K1 = PPred @ jH1.T @ np.linalg.inv(S1)
-        ## odom
-        zPred_odom = self.odom_observation_model(xPred)
-        y2 = z2 - zPred_odom
-        S2 = jH2 @ PPred @ jH2.T + R2
-        K2 = PPred @ jH2.T @ np.linalg.inv(S2)
+        jH = self.jacob_h()
 
-        xEst = xPred + K1 @ y1 + K2 @ y2
-        PEst = (np.eye(len(xEst)) - K1 @ jH1 - K2 @ jH2) @ PPred
+        zPred = self.observation_model(xPred)
+        y = z - zPred
+        S = jH @ PPred @ jH.T + R
+        K = PPred @ jH.T @ np.linalg.inv(S)
+
+        xEst = xPred + K @ y
+        PEst = (np.eye(len(xEst)) - K @ jH ) @ PPred
         return xEst, PEst
     
 
